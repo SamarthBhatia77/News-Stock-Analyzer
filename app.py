@@ -1,124 +1,201 @@
+"""
+Streamlit Web Application
+Frontend for Stock Sentiment Advisor
+"""
+
 import streamlit as st
+import logging
+from datetime import datetime
 from agent import StockAdvisorAgent
-from notification import send_email_notification
+from notification import NotificationHandler
+import json
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Page configuration
 st.set_page_config(
-    page_title="AI Stock Advisor",
-    page_icon="📈",
-    layout="wide"
+    page_title="Stock Sentiment Advisor",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# Initialize agent
+# Custom CSS
+st.markdown("""
+    <style>
+    .main {
+        padding-top: 0rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 20px;
+        border-radius: 10px;
+        margin: 10px 0;
+    }
+    .buy-action {
+        color: green;
+        font-weight: bold;
+        font-size: 24px;
+    }
+    .sell-action {
+        color: red;
+        font-weight: bold;
+        font-size: 24px;
+    }
+    .hold-action {
+        color: orange;
+        font-weight: bold;
+        font-size: 24px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Initialize session state
 if 'agent' not in st.session_state:
     st.session_state.agent = StockAdvisorAgent()
 
-# Title
-st.title("📈 AI Stock Investment Advisor")
-st.markdown("*Powered by Agentic AI & Sentiment Analysis*")
+if 'notification_handler' not in st.session_state:
+    st.session_state.notification_handler = NotificationHandler()
 
-# Sidebar for user settings
-st.sidebar.header("📧 Email Settings")
-user_email = st.sidebar.text_input(
-    "Your Email Address",
-    placeholder="your@email.com",
-    help="Enter email to receive stock recommendations"
-)
+if 'analysis_history' not in st.session_state:
+    st.session_state.analysis_history = []
 
 
-# Main input
-st.markdown("---")
-user_query = st.text_input(
-    "🔍 What stock would you like to analyze?",
-    placeholder="E.g., Please analyze stocks of Apple for me",
-    help="Enter a company name like Apple, Tesla, NVIDIA, etc."
-)
-
-analyze_button = st.button("🚀 Analyze Stock", type="primary", use_container_width=True)
-
-# Analysis logic
-if analyze_button and user_query:
+def main():
+    # Header
+    st.title("📊 AI Stock Sentiment Advisor")
+    st.markdown("---")
     
-    with st.spinner("🤖 Agent working... This may take 30-60 seconds"):
-        # Run the agent
-        result = st.session_state.agent.analyze_stock(user_query)
-    
-    if 'error' in result:
-        st.error(f"❌ {result['error']}")
-    
-    else:
-        # Display results
-        st.success("✅ Analysis Complete!")
+    # Sidebar
+    with st.sidebar:
+        st.header("⚙️ Configuration")
         
-        # Metrics row
-        col1, col2, col3, col4 = st.columns(4)
+        # Stock input
+        stock_ticker = st.text_input(
+            "Enter Stock Ticker",
+            value="AAPL",
+            placeholder="e.g., AAPL, TSLA, GOOGL",
+            help="Stock symbol to analyze"
+        ).upper()
         
-        with col1:
-            st.metric("Stock", result['stock_symbol'])
+        # Analyze button
+        analyze_button = st.button("🔍 Analyze Stock", use_container_width=True)
         
-        with col2:
-            st.metric("Action", result['action'])
-        
-        with col3:
-            amount = result['investment_amount']
-            st.metric("Amount", f"${abs(amount)}", 
-                     delta=f"{'Invest' if amount > 0 else 'Sell'}")
-        
-        with col4:
-            st.metric("Confidence", f"{result['confidence']:.1f}%")
-        
-        # Detailed breakdown
+        # Email notification
         st.markdown("---")
-        st.subheader("📊 Sentiment Analysis Details")
+        st.subheader("📧 Email Notification")
         
-        col_a, col_b = st.columns(2)
-        
-        with col_a:
-            st.write(f"**Average Sentiment Score:** {result['average_score']}")
-            st.write(f"**Reasoning:** {result['reasoning']}")
-            st.write(f"**Total Texts Analyzed:** {result['total_analyzed']}")
-        
-        with col_b:
-            # Sentiment breakdown chart
-            import pandas as pd
-            sentiment_data = pd.DataFrame({
-                'Sentiment': ['Positive', 'Negative', 'Neutral'],
-                'Count': [
-                    result['positive_count'],
-                    result['negative_count'],
-                    result['neutral_count']
-                ]
-            })
-            st.bar_chart(sentiment_data.set_index('Sentiment'))
-        
-        # Recommendation box
-        st.markdown("---")
-        
-        if result['investment_amount'] > 0:
-            st.success(f"### 💰 Recommendation: {result['action']}")
-            st.write(f"Consider investing **${result['investment_amount']}** in {result['stock_symbol']}")
-        elif result['investment_amount'] < 0:
-            st.warning(f"### ⚠️ Recommendation: {result['action']}")
-            st.write(f"Consider selling **${abs(result['investment_amount'])}** worth of {result['stock_symbol']}")
+        send_email = st.checkbox("Send recommendation to email")
+        if send_email:
+            recipient_email = st.text_input(
+                "Recipient Email",
+                placeholder="your-email@example.com",
+                help="Email to send recommendation"
+            )
         else:
-            st.info(f"### 🤔 Recommendation: {result['action']}")
-            st.write("Hold your position and wait for clearer signals")
-        
-        # Send email notification
-        st.markdown("---")
-        st.subheader("📧 Send Recommendation to Email")
+            recipient_email = None
+    
+    # Main content area
+    if analyze_button and stock_ticker:
+        with st.spinner(f"🔄 Analyzing {stock_ticker}... This may take a minute..."):
+            try:
+                # Run agent analysis
+                result = st.session_state.agent.execute(stock_ticker)
+                
+                # Extract recommendation
+                recommendation = result['recommendation']
+                
+                # Store in history
+                st.session_state.analysis_history.append(recommendation)
+                
+                # Display results
+                st.markdown("---")
+                st.subheader(f"Analysis Results for {stock_ticker}")
+                
+                # Metrics row
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    action_color = (
+                        "green" if recommendation['action'] == 'BUY' 
+                        else "red" if recommendation['action'] == 'SELL' 
+                        else "orange"
+                    )
+                    st.metric(
+                        "Action",
+                        recommendation['action'],
+                        delta=f"{recommendation['confidence']:.0%} confidence"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Sentiment Score",
+                        f"{recommendation['sentiment_score']:.3f}",
+                        delta="Scale: -1 to +1"
+                    )
+                
+                with col3:
+                    st.metric(
+                        "Investment",
+                        f"{recommendation['investment_percent']}%",
+                        delta="of your portfolio"
+                    )
+                
+                with col4:
+                    st.metric(
+                        "Data Points",
+                        recommendation['data_points'],
+                        delta="sources analyzed"
+                    )
+                
+                # Detailed reasoning
+                st.markdown("---")
+                st.subheader("💡 Analysis Details")
+                
+                with st.expander("📝 Detailed Reasoning"):
+                    st.write(recommendation['reasoning'])
+                
+                with st.expander("📊 Raw Recommendation"):
+                    st.json(recommendation, expanded=False)
+                
+                # Send email if requested
+                if send_email and recipient_email:
+                    with st.spinner("📧 Sending email..."):
+                        success = st.session_state.notification_handler.send_email_recommendation(
+                            recommendation,
+                            recipient_email
+                        )
+                        
+                        if success:
+                            st.success(f"✅ Email sent to {recipient_email}")
+                        else:
+                            st.error(f"❌ Failed to send email")
+                
+            except Exception as e:
+                st.error(f"❌ Error during analysis: {str(e)}")
+                logger.error(f"Error: {str(e)}")
+    
+    # History section
+    st.markdown("---")
+    st.subheader("📜 Analysis History")
+    
+    if st.session_state.analysis_history:
+        for idx, record in enumerate(reversed(st.session_state.analysis_history)):
+            with st.expander(
+                f"{record['stock_ticker']} - {record['action']} - {record['timestamp']}"
+            ):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**Action:** {record['action']}")
+                    st.write(f"**Confidence:** {record['confidence']:.0%}")
+                with col2:
+                    st.write(f"**Sentiment:** {record['sentiment_score']:.3f}")
+                    st.write(f"**Investment:** {record['investment_percent']}%")
+    else:
+        st.info("No analysis history yet. Start by analyzing a stock!")
 
-        if st.button("📧 Send Email", type="primary", use_container_width=True):
-            if user_email:
-                with st.spinner("Sending email..."):
-                    if send_email_notification(result, user_email):
-                        st.success(f"✅ Email sent successfully to {user_email}")
-                    else:
-                        st.error("❌ Failed to send email. Check your Gmail settings.")
-            else:
-                st.warning("⚠️ Please enter your email address in the sidebar first")
 
-
-# Footer
-st.markdown("---")
-st.caption("⚠️ This is not financial advice. Always conduct your own research before investing.")
+if __name__ == "__main__":
+    main()

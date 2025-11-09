@@ -1,181 +1,293 @@
-import requests
-from scrapers import scrape_all_sources
-from text_cleaner import clean_multiple_texts
+"""
+Agentic AI Module
+Orchestrates the entire workflow: observe -> scrape -> clean -> predict -> act
+"""
+
 import os
-from dotenv import load_dotenv
+import logging
+from datetime import datetime
+from scrapers import UnifiedScraper
+from text_cleaner import TextCleaner
+import requests
+import json
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
-COLAB_MODEL_URL = os.getenv('COLAB_MODEL_URL')
 
 class StockAdvisorAgent:
-    """
-    Agentic AI that orchestrates the entire stock analysis workflow
-    """
-    
     def __init__(self):
-        self.colab_model_url = COLAB_MODEL_URL
+        """Initialize the agentic AI agent"""
+        self.scraper = UnifiedScraper()
+        self.cleaner = TextCleaner()
+        self.model_url = os.getenv('COLAB_MODEL_URL', 'http://localhost:5000/predict')
+        self.history = []
+        logger.info("🤖 Stock Advisor Agent initialized")
     
-    def extract_stock_info(self, user_query):
+    def observe(self, stock_ticker: str) -> dict:
         """
-        Extracts company name and stock symbol from user query
-        For simplicity, using a mapping. You can use LLM for this.
+        STEP 1: OBSERVE
+        Agent observes user request and decides what data to gather
+        
+        Args:
+            stock_ticker: Stock symbol to analyze
+        
+        Returns:
+            State dict with observation results
         """
-        # Simple keyword matching (you can make this smarter with LLM)
-        stock_map = {
-            'apple': ('Apple', 'AAPL'),
-            'nvidia': ('NVIDIA', 'NVDA'),
-            'tesla': ('Tesla', 'TSLA'),
-            'microsoft': ('Microsoft', 'MSFT'),
-            'amazon': ('Amazon', 'AMZN'),
-            'google': ('Google', 'GOOGL'),
-            'meta': ('Meta', 'META'),
+        logger.info(f"\n🔍 AGENT STEP 1 - OBSERVE")
+        logger.info(f"   Stock ticker: {stock_ticker}")
+        logger.info(f"   Decision: Need to scrape Reddit, Twitter, and News")
+        
+        state = {
+            'stock_ticker': stock_ticker.upper(),
+            'timestamp': datetime.now(),
+            'status': 'observing'
         }
         
-        query_lower = user_query.lower()
+        return state
+    
+    def scrape(self, state: dict) -> dict:
+        """
+        STEP 2: SCRAPE
+        Agent scrapes data from multiple sources
         
-        for keyword, (company, symbol) in stock_map.items():
-            if keyword in query_lower:
-                return company, symbol
+        Args:
+            state: Current state dict
         
-        return None, None
+        Returns:
+            Updated state with raw data
+        """
+        logger.info(f"\n📡 AGENT STEP 2 - SCRAPE")
+        
+        stock_ticker = state['stock_ticker']
+        logger.info(f"   Scraping Reddit, Twitter, News for {stock_ticker}...")
+        
+        raw_data = self.scraper.scrape_all(
+            stock_ticker,
+            reddit_limit=30,
+            twitter_limit=50,
+            news_limit=20
+        )
+        
+        state['raw_data'] = raw_data
+        state['raw_data_count'] = len(raw_data)
+        logger.info(f"   ✅ Collected {len(raw_data)} data points")
+        
+        return state
     
-    def scrape_social_media(self, stock_symbol, company_name):
+    def clean(self, state: dict) -> dict:
         """
-        Step 2: Scrape Reddit and Twitter
+        STEP 3: CLEAN
+        Agent cleans data for ML model input
+        
+        Args:
+            state: Current state dict
+        
+        Returns:
+            Updated state with cleaned data
         """
-        return scrape_all_sources(stock_symbol, company_name)
+        logger.info(f"\n🧹 AGENT STEP 3 - CLEAN")
+        
+        raw_data = state['raw_data']
+        logger.info(f"   Cleaning {len(raw_data)} texts...")
+        
+        cleaned_data = self.cleaner.clean_scraper_output(raw_data)
+        
+        # Extract just the cleaned texts for ML model
+        cleaned_texts = [item['cleaned_text'] for item in cleaned_data if 'cleaned_text' in item]
+        
+        state['cleaned_data'] = cleaned_data
+        state['cleaned_texts'] = cleaned_texts
+        logger.info(f"   ✅ Cleaned {len(cleaned_texts)} texts")
+        
+        return state
     
-    def clean_texts(self, raw_texts):
+    def predict(self, state: dict) -> dict:
         """
-        Step 3: Clean scraped texts
+        STEP 4: PREDICT
+        Agent sends cleaned data to ML model and gets sentiment scores
+        
+        Args:
+            state: Current state dict
+        
+        Returns:
+            Updated state with predictions
         """
-        print(f"\n[2/5] Cleaning {len(raw_texts)} texts...")
-        cleaned = clean_multiple_texts(raw_texts)
-        print(f"✓ {len(cleaned)} texts cleaned (removed {len(raw_texts) - len(cleaned)} invalid)")
-        return cleaned
-    
-    def get_sentiment_scores(self, clean_texts):
-        """
-        Step 4: Send to Google Colab model for sentiment analysis
-        """
-        print(f"\n[3/5] Sending texts to sentiment model...")
+        logger.info(f"\n🤖 AGENT STEP 4 - PREDICT")
+        
+        cleaned_texts = state['cleaned_texts']
+        logger.info(f"   Sending {len(cleaned_texts)} texts to ML model...")
+        logger.info(f"   Model URL: {self.model_url}")
         
         try:
+            # TODO: Replace with actual model endpoint
+            # This assumes your friend's Google Colab provides a /predict endpoint
+            # that accepts {'texts': [...]} and returns {'scores': [...]}
+            
             response = requests.post(
-                self.colab_model_url,
-                json={'texts': clean_texts},
-                timeout=60
+                self.model_url,
+                json={'texts': cleaned_texts},
+                timeout=30
             )
             
-            result = response.json()
-            scores = result['scores']  # List of scores from -1 to +1
-            
-            print(f"✓ Received {len(scores)} sentiment scores from model")
-            return scores
-            
+            if response.status_code == 200:
+                result = response.json()
+                scores = result.get('scores', [])
+                
+                # Calculate average sentiment
+                avg_sentiment = sum(scores) / len(scores) if scores else 0.0
+                
+                state['sentiment_scores'] = scores
+                state['average_sentiment'] = avg_sentiment
+                
+                logger.info(f"   ✅ Got {len(scores)} sentiment scores")
+                logger.info(f"   Average sentiment: {avg_sentiment:.4f}")
+                
+            else:
+                logger.error(f"   ❌ Model error: {response.status_code}")
+                state['average_sentiment'] = 0.0
+                state['sentiment_scores'] = []
+        
         except Exception as e:
-            print(f"✗ Error calling model: {str(e)}")
-            return None
+            logger.error(f"   ❌ Error calling model: {str(e)}")
+            state['average_sentiment'] = 0.0
+            state['sentiment_scores'] = []
+        
+        return state
     
-    def calculate_investment_recommendation(self, scores, stock_symbol):
+    def act(self, state: dict) -> dict:
         """
-        Step 5: Calculate investment recommendation based on scores
+        STEP 5: ACT
+        Agent interprets sentiment scores and generates investment recommendation
+        
+        Args:
+            state: Current state dict
+        
+        Returns:
+            Updated state with recommendation
         """
-        print(f"\n[4/5] Calculating investment recommendation...")
+        logger.info(f"\n⚡ AGENT STEP 5 - ACT")
         
-        if not scores:
-            return None
+        sentiment = state.get('average_sentiment', 0.0)
+        stock_ticker = state['stock_ticker']
         
-        # Calculate average sentiment score
-        avg_score = sum(scores) / len(scores)
+        logger.info(f"   Sentiment score: {sentiment:.4f}")
+        logger.info(f"   Generating investment recommendation...")
         
-        # Count positive vs negative
-        positive_count = sum(1 for s in scores if s > 0)
-        negative_count = sum(1 for s in scores if s < 0)
-        neutral_count = sum(1 for s in scores if s == 0)
-        
-        # Determine investment amount based on sentiment
-        # This is where your model's investment calculation would go
-        if avg_score >= 0.5:
-            action = "STRONG BUY"
-            investment_amount = 1000
-            reasoning = "Very positive sentiment detected"
-        elif avg_score >= 0.2:
+        # Agent reasoning logic
+        if sentiment > 0.5:
             action = "BUY"
-            investment_amount = 500
-            reasoning = "Moderately positive sentiment"
-        elif avg_score >= -0.2:
-            action = "HOLD"
-            investment_amount = 0
-            reasoning = "Neutral sentiment - wait for clearer signals"
-        elif avg_score >= -0.5:
-            action = "CONSIDER SELLING"
-            investment_amount = -300
-            reasoning = "Moderately negative sentiment"
+            confidence = min(sentiment, 1.0)
+            investment_percent = int((sentiment - 0.5) * 40)  # Max 20% for score of 1.0
+            reasoning = (
+                f"Strong positive sentiment ({sentiment:.2f}). "
+                f"Market discussion is overwhelmingly optimistic about {stock_ticker}. "
+                f"Consider buying."
+            )
+        
+        elif sentiment < -0.5:
+            action = "SELL"
+            confidence = min(abs(sentiment), 1.0)
+            investment_percent = int((abs(sentiment) - 0.5) * 40)
+            reasoning = (
+                f"Strong negative sentiment ({sentiment:.2f}). "
+                f"Market discussion shows concerns about {stock_ticker}. "
+                f"Consider selling."
+            )
+        
         else:
-            action = "STRONG SELL"
-            investment_amount = -500
-            reasoning = "Very negative sentiment detected"
+            action = "HOLD"
+            confidence = 0.5
+            investment_percent = 0
+            reasoning = (
+                f"Neutral sentiment ({sentiment:.2f}). "
+                f"Market opinion is mixed about {stock_ticker}. "
+                f"Wait for clearer signals."
+            )
         
         recommendation = {
-            'stock_symbol': stock_symbol,
-            'average_score': round(avg_score, 3),
-            'positive_count': positive_count,
-            'negative_count': negative_count,
-            'neutral_count': neutral_count,
-            'total_analyzed': len(scores),
+            'stock_ticker': stock_ticker,
             'action': action,
-            'investment_amount': investment_amount,
+            'confidence': float(confidence),
+            'sentiment_score': float(sentiment),
+            'investment_percent': investment_percent,
             'reasoning': reasoning,
-            'confidence': abs(avg_score) * 100  # 0-100%
+            'timestamp': state['timestamp'],
+            'data_points': state['raw_data_count']
         }
         
-        print(f"✓ Recommendation: {action} ${abs(investment_amount)}")
-        return recommendation
+        state['recommendation'] = recommendation
+        
+        logger.info(f"\n✅ RECOMMENDATION:")
+        logger.info(f"   Action: {action}")
+        logger.info(f"   Confidence: {confidence:.2%}")
+        logger.info(f"   Investment: {investment_percent}% of portfolio")
+        logger.info(f"   Reasoning: {reasoning}")
+        
+        return state
     
-    def analyze_stock(self, user_query):
+    def execute(self, stock_ticker: str) -> dict:
         """
-        Main agent workflow - orchestrates all steps
+        Main execution method - runs complete agent loop
+        
+        OBSERVE → SCRAPE → CLEAN → PREDICT → ACT
+        
+        Args:
+            stock_ticker: Stock to analyze
+        
+        Returns:
+            Final state dict with recommendation
         """
-        print("="*60)
-        print("AGENTIC AI STOCK ADVISOR - ANALYSIS STARTING")
-        print("="*60)
+        logger.info(f"\n{'='*60}")
+        logger.info(f"🚀 STOCK ADVISOR AGENT EXECUTION START")
+        logger.info(f"{'='*60}")
         
-        # Step 1: Extract stock info from query
-        company_name, stock_symbol = self.extract_stock_info(user_query)
+        # Step 1: Observe
+        state = self.observe(stock_ticker)
         
-        if not company_name:
-            return {
-                'error': 'Could not identify stock from query. Try mentioning a company name.'
+        # Step 2: Scrape
+        state = self.scrape(state)
+        
+        if len(state['raw_data']) == 0:
+            logger.warning(f"⚠️  No data found for {stock_ticker}")
+            state['recommendation'] = {
+                'stock_ticker': stock_ticker,
+                'action': 'ERROR',
+                'reasoning': 'No data found for this stock'
             }
+            return state
         
-        print(f"\n[0/5] Analyzing: {company_name} ({stock_symbol})")
+        # Step 3: Clean
+        state = self.clean(state)
         
-        # Step 2: Scrape social media
-        raw_texts = self.scrape_social_media(stock_symbol, company_name)
+        # Step 4: Predict
+        state = self.predict(state)
         
-        if not raw_texts:
-            return {
-                'error': 'No social media data found for this stock'
-            }
+        # Step 5: Act
+        state = self.act(state)
         
-        # Step 3: Clean texts
-        clean_texts = self.clean_texts(raw_texts)
+        # Store in history
+        self.history.append(state['recommendation'])
         
-        # Step 4: Get sentiment scores from your model
-        scores = self.get_sentiment_scores(clean_texts)
+        logger.info(f"\n{'='*60}")
+        logger.info(f"✅ EXECUTION COMPLETE")
+        logger.info(f"{'='*60}\n")
         
-        if not scores:
-            return {
-                'error': 'Failed to get sentiment scores from model'
-            }
-        
-        # Step 5: Calculate recommendation
-        recommendation = self.calculate_investment_recommendation(scores, stock_symbol)
-        
-        print("\n" + "="*60)
-        print("ANALYSIS COMPLETE")
-        print("="*60 + "\n")
-        
-        return recommendation
+        return state
+    
+    def get_history(self) -> list:
+        """Get historical recommendations"""
+        return self.history
+
+
+# Test the agent
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    logging.basicConfig(level=logging.INFO)
+    
+    agent = StockAdvisorAgent()
+    result = agent.execute("AAPL")
+    print(json.dumps(result['recommendation'], indent=2, default=str))
