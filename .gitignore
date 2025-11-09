@@ -1,34 +1,43 @@
-# Environment variables
+# Environment variables (IMPORTANT - Contains API keys!)
 .env
-.env.local
 
-# Python
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
-env/
-venv/
-ENV/
 
-# IDE
+# Virtual environment
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# Models
-models/
-*.pkl
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Model files (if large)
+*.pth
+*.pt
 *.h5
-
-# Streamlit
-.streamlit/
+*.pkl
+*.joblib
 
 # Logs
 *.log
 
-# OS
-.DS_Store
-Thumbs.db
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

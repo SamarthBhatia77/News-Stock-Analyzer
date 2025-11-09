@@ -5,11 +5,17 @@ Orchestrates the entire workflow: observe -> scrape -> clean -> predict -> act
 
 import os
 import logging
+import json
 from datetime import datetime
 from scrapers import UnifiedScraper
 from text_cleaner import TextCleaner
-import requests
-import json
+from dotenv import load_dotenv
+import numpy as np
+
+# ML Model imports
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+import torch.nn.functional as F
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -20,7 +26,6 @@ class StockAdvisorAgent:
         """Initialize the agentic AI agent"""
         self.scraper = UnifiedScraper()
         self.cleaner = TextCleaner()
-        self.model_url = os.getenv('COLAB_MODEL_URL', 'http://localhost:5000/predict')
         self.history = []
         logger.info("🤖 Stock Advisor Agent initialized")
     
@@ -28,12 +33,6 @@ class StockAdvisorAgent:
         """
         STEP 1: OBSERVE
         Agent observes user request and decides what data to gather
-        
-        Args:
-            stock_ticker: Stock symbol to analyze
-        
-        Returns:
-            State dict with observation results
         """
         logger.info(f"\n🔍 AGENT STEP 1 - OBSERVE")
         logger.info(f"   Stock ticker: {stock_ticker}")
@@ -44,19 +43,12 @@ class StockAdvisorAgent:
             'timestamp': datetime.now(),
             'status': 'observing'
         }
-        
         return state
     
     def scrape(self, state: dict) -> dict:
         """
         STEP 2: SCRAPE
         Agent scrapes data from multiple sources
-        
-        Args:
-            state: Current state dict
-        
-        Returns:
-            Updated state with raw data
         """
         logger.info(f"\n📡 AGENT STEP 2 - SCRAPE")
         
@@ -80,12 +72,6 @@ class StockAdvisorAgent:
         """
         STEP 3: CLEAN
         Agent cleans data for ML model input
-        
-        Args:
-            state: Current state dict
-        
-        Returns:
-            Updated state with cleaned data
         """
         logger.info(f"\n🧹 AGENT STEP 3 - CLEAN")
         
@@ -93,9 +79,8 @@ class StockAdvisorAgent:
         logger.info(f"   Cleaning {len(raw_data)} texts...")
         
         cleaned_data = self.cleaner.clean_scraper_output(raw_data)
-        
-        # Extract just the cleaned texts for ML model
-        cleaned_texts = [item['cleaned_text'] for item in cleaned_data if 'cleaned_text' in item]
+        cleaned_texts = [item['cleaned_text'] for item in cleaned_data 
+                        if 'cleaned_text' in item and item['cleaned_text']]
         
         state['cleaned_data'] = cleaned_data
         state['cleaned_texts'] = cleaned_texts
@@ -106,102 +91,140 @@ class StockAdvisorAgent:
     def predict(self, state: dict) -> dict:
         """
         STEP 4: PREDICT
-        Agent sends cleaned data to ML model and gets sentiment scores
-        
-        Args:
-            state: Current state dict
-        
-        Returns:
-            Updated state with predictions
+        Agent runs sentiment analysis using RoBERTa
         """
         logger.info(f"\n🤖 AGENT STEP 4 - PREDICT")
         
         cleaned_texts = state['cleaned_texts']
-        logger.info(f"   Sending {len(cleaned_texts)} texts to ML model...")
-        logger.info(f"   Model URL: {self.model_url}")
+        logger.info(f"   Running sentiment analysis on {len(cleaned_texts)} texts...")
         
         try:
-            # TODO: Replace with actual model endpoint
-            # This assumes your friend's Google Colab provides a /predict endpoint
-            # that accepts {'texts': [...]} and returns {'scores': [...]}
+            # Load model if not already loaded
+            if not hasattr(self, 'tokenizer'):
+                MODEL_NAME = "cardiffnlp/twitter-roberta-base-sentiment"
+                logger.info(f"   Loading model: {MODEL_NAME}")
+                
+                self.tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+                self.model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+                self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                self.model.to(self.device)
+                self.model.eval()
+                
+                logger.info(f"   ✅ Model loaded on device: {self.device}")
             
-            response = requests.post(
-                self.model_url,
-                json={'texts': cleaned_texts},
-                timeout=30
-            )
+            # Batch prediction
+            def predict_batch_scores(texts):
+                enc = self.tokenizer(
+                    texts, 
+                    padding=True, 
+                    truncation=True, 
+                    max_length=256,
+                    return_tensors='pt'
+                )
+                enc = {k: v.to(self.device) for k, v in enc.items()}
+                
+                with torch.no_grad():
+                    out = self.model(**enc)
+                    probs = F.softmax(out.logits, dim=-1).cpu().numpy()
+                
+                # Return probabilities: [negative, neutral, positive]
+                return probs
             
-            if response.status_code == 200:
-                result = response.json()
-                scores = result.get('scores', [])
-                
-                # Calculate average sentiment
-                avg_sentiment = sum(scores) / len(scores) if scores else 0.0
-                
-                state['sentiment_scores'] = scores
-                state['average_sentiment'] = avg_sentiment
-                
-                logger.info(f"   ✅ Got {len(scores)} sentiment scores")
-                logger.info(f"   Average sentiment: {avg_sentiment:.4f}")
-                
-            else:
-                logger.error(f"   ❌ Model error: {response.status_code}")
-                state['average_sentiment'] = 0.0
-                state['sentiment_scores'] = []
-        
+            # Process in batches
+            BATCH_SIZE = 32
+            all_probs = []
+            
+            for i in range(0, len(cleaned_texts), BATCH_SIZE):
+                batch = cleaned_texts[i:i + BATCH_SIZE]
+                batch_probs = predict_batch_scores(batch)
+                all_probs.extend(batch_probs)
+            
+            # Convert to numpy array
+            all_probs = np.array(all_probs)
+            
+            # Calculate counts: probs[:, 0]=negative, probs[:, 2]=positive
+            # Use probability > 0.5 as threshold for counting
+            positive_count = np.sum(all_probs[:, 2] > 0.5)
+            negative_count = np.sum(all_probs[:, 0] > 0.5)
+            
+            # NEW FORMULA: Sentiment Score = ln[(1 + Positive Count) / (1 + Negative Count)]
+            sentiment_score = np.log((1 + positive_count) / (1 + negative_count))
+            
+            # Store individual scores for reference (old method)
+            individual_scores = all_probs[:, 2] - all_probs[:, 0]
+            
+            state['sentiment_scores'] = individual_scores.tolist()
+            state['sentiment_score'] = float(sentiment_score)
+            state['positive_count'] = int(positive_count)
+            state['negative_count'] = int(negative_count)
+            
+            logger.info(f"   ✅ Analyzed {len(cleaned_texts)} texts")
+            logger.info(f"   Positive count: {positive_count}")
+            logger.info(f"   Negative count: {negative_count}")
+            logger.info(f"   Sentiment score: {sentiment_score:.4f}")
+            
         except Exception as e:
-            logger.error(f"   ❌ Error calling model: {str(e)}")
-            state['average_sentiment'] = 0.0
+            logger.error(f"   ❌ Error: {str(e)}")
+            state['sentiment_score'] = 0.0
             state['sentiment_scores'] = []
+            state['positive_count'] = 0
+            state['negative_count'] = 0
         
         return state
     
-    def act(self, state: dict) -> dict:
+    def act(self, state: dict, budget: float = 10000.0) -> dict:
         """
         STEP 5: ACT
-        Agent interprets sentiment scores and generates investment recommendation
+        Agent interprets sentiment score and generates investment recommendation
         
-        Args:
-            state: Current state dict
-        
-        Returns:
-            Updated state with recommendation
+        Uses formulas:
+        - Sentiment Score = ln[(1 + Positive Count) / (1 + Negative Count)]
+        - Investment Amount = Base Budget × tanh(Sentiment Score)
         """
         logger.info(f"\n⚡ AGENT STEP 5 - ACT")
         
-        sentiment = state.get('average_sentiment', 0.0)
+        sentiment_score = state.get('sentiment_score', 0.0)
         stock_ticker = state['stock_ticker']
+        positive_count = state.get('positive_count', 0)
+        negative_count = state.get('negative_count', 0)
         
-        logger.info(f"   Sentiment score: {sentiment:.4f}")
+        logger.info(f"   Sentiment score: {sentiment_score:.4f}")
         logger.info(f"   Generating investment recommendation...")
         
-        # Agent reasoning logic
-        if sentiment > 0.5:
+        # NEW FORMULA: Investment Amount = Base Budget × tanh(Sentiment Score)
+        tanh_value = np.tanh(sentiment_score)
+        investment_amount = budget * tanh_value
+        investment_percent = tanh_value * 100  # Convert to percentage
+        
+        # Determine action based on sentiment score thresholds
+        if sentiment_score > 0.15:
             action = "BUY"
-            confidence = min(sentiment, 1.0)
-            investment_percent = int((sentiment - 0.5) * 40)  # Max 20% for score of 1.0
+            confidence = min(abs(tanh_value), 1.0)
             reasoning = (
-                f"Strong positive sentiment ({sentiment:.2f}). "
-                f"Market discussion is overwhelmingly optimistic about {stock_ticker}. "
+                f"Positive sentiment (score: {sentiment_score:.2f}, "
+                f"{positive_count} positive vs {negative_count} negative mentions). "
+                f"Market discussion leans optimistic about {stock_ticker}. "
                 f"Consider buying."
             )
         
-        elif sentiment < -0.5:
+        elif sentiment_score < -0.15:
             action = "SELL"
-            confidence = min(abs(sentiment), 1.0)
-            investment_percent = int((abs(sentiment) - 0.5) * 40)
+            confidence = min(abs(tanh_value), 1.0)
             reasoning = (
-                f"Strong negative sentiment ({sentiment:.2f}). "
+                f"Negative sentiment (score: {sentiment_score:.2f}, "
+                f"{positive_count} positive vs {negative_count} negative mentions). "
                 f"Market discussion shows concerns about {stock_ticker}. "
-                f"Consider selling."
+                f"Consider selling or avoiding."
             )
         
-        else:
+        else:  # -0.15 to +0.15
             action = "HOLD"
             confidence = 0.5
-            investment_percent = 0
+            investment_amount = 0.0
+            investment_percent = 0.0
             reasoning = (
-                f"Neutral sentiment ({sentiment:.2f}). "
+                f"Neutral sentiment (score: {sentiment_score:.2f}, "
+                f"{positive_count} positive vs {negative_count} negative mentions). "
                 f"Market opinion is mixed about {stock_ticker}. "
                 f"Wait for clearer signals."
             )
@@ -210,8 +233,12 @@ class StockAdvisorAgent:
             'stock_ticker': stock_ticker,
             'action': action,
             'confidence': float(confidence),
-            'sentiment_score': float(sentiment),
-            'investment_percent': investment_percent,
+            'sentiment_score': float(sentiment_score),
+            'positive_count': int(positive_count),
+            'negative_count': int(negative_count),
+            'investment_percent': float(investment_percent),
+            'investment_amount': float(investment_amount),
+            'budget': float(budget),
             'reasoning': reasoning,
             'timestamp': state['timestamp'],
             'data_points': state['raw_data_count']
@@ -222,22 +249,52 @@ class StockAdvisorAgent:
         logger.info(f"\n✅ RECOMMENDATION:")
         logger.info(f"   Action: {action}")
         logger.info(f"   Confidence: {confidence:.2%}")
-        logger.info(f"   Investment: {investment_percent}% of portfolio")
+        logger.info(f"   Investment: ${investment_amount:,.2f} ({investment_percent:.2f}%)")
         logger.info(f"   Reasoning: {reasoning}")
         
+        recommendation = {
+        'stock_ticker': stock_ticker,
+        'action': action,
+        'confidence': float(confidence),
+        'sentiment_score': float(sentiment_score),
+        'positive_count': int(positive_count),
+        'negative_count': int(negative_count),
+        'investment_percent': float(investment_percent),
+        'investment_amount': float(investment_amount),
+        'budget': float(budget),
+        'reasoning': reasoning,
+        'timestamp': state['timestamp'],
+        'data_points': state['raw_data_count']
+    }
+    
+        # NEW: Add source references (max 10 from each source)
+        raw_data = state.get('raw_data', [])
+        
+        # Separate by source
+        reddit_sources = [item for item in raw_data if item.get('source') == 'reddit']
+        twitter_sources = [item for item in raw_data if item.get('source') == 'twitter']
+        news_sources = [item for item in raw_data if item.get('source') in ['newsapi', 'google_news']]
+        
+        # Take up to 10 from each
+        recommendation['references'] = {
+            'reddit': reddit_sources[:min(10, len(reddit_sources))],
+            'twitter': twitter_sources[:min(10, len(twitter_sources))],
+            'news': news_sources[:min(10, len(news_sources))]
+        }
+        
+        state['recommendation'] = recommendation
+        
+        logger.info(f"\n✅ RECOMMENDATION:")
+        logger.info(f"   Action: {action}")
+        logger.info(f"   Confidence: {confidence:.2%}")
+        logger.info(f"   Investment: ${investment_amount:,.2f} ({investment_percent:.2f}%)")
+        logger.info(f"   Reasoning: {reasoning}")
+
         return state
     
-    def execute(self, stock_ticker: str) -> dict:
+    def execute(self, stock_ticker: str, budget: float = 10000.0) -> dict:
         """
         Main execution method - runs complete agent loop
-        
-        OBSERVE → SCRAPE → CLEAN → PREDICT → ACT
-        
-        Args:
-            stock_ticker: Stock to analyze
-        
-        Returns:
-            Final state dict with recommendation
         """
         logger.info(f"\n{'='*60}")
         logger.info(f"🚀 STOCK ADVISOR AGENT EXECUTION START")
@@ -265,7 +322,7 @@ class StockAdvisorAgent:
         state = self.predict(state)
         
         # Step 5: Act
-        state = self.act(state)
+        state = self.act(state, budget=budget)
         
         # Store in history
         self.history.append(state['recommendation'])
@@ -289,5 +346,5 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     
     agent = StockAdvisorAgent()
-    result = agent.execute("AAPL")
+    result = agent.execute("AAPL", budget=10000)
     print(json.dumps(result['recommendation'], indent=2, default=str))
