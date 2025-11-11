@@ -3,6 +3,10 @@
 ## Overview
 Stock markets move not just on numbers, but on emotion. Every tweet, Reddit thread, and headline reflects investor mood — bullish or bearish — and this sentiment often drives short-term volatility. This model leverages the power of Machine Learning driven sentiment analysis to quantify this emotion. It continuously scrapes social media data (Twitter, Reddit and News API), performs hourly sentiment analysis, and converts the sentiment score into an actionable investment recommendation. Our goal is to help traders and analysts see beyond prices and understand why the market feels the way it does, and how that feeling is likely to affect tomorrow's prices.
 
+## Images 📸
+<img src="projpic1.jpg" alt="projpic1" width="1000">
+<img src="projpic2.jpg" alt="projpic2" width="1000">
+
 ## How It Works
 
 ### User Input
