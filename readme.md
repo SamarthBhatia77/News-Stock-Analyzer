@@ -1,7 +1,7 @@
 # News-Investment-Predictor
 
 ## Overview
-Stock markets move not just on numbers, but on emotion. Every tweet, Reddit thread, and headline reflects investor mood — bullish or bearish — and this sentiment often drives short-term volatility. This model leverages the power of Machine Learning driven sentiment analysis to quantify this emotion. It continuously scrapes social media data (Twitter, Reddit and News API), performs hourly sentiment analysis, and converts the sentiment score into an actionable investment recommendation. Our goal is to help traders and analysts see beyond prices and understand why the market feels the way it does, and how that feeling is likely to affect tomorrow's prices.
+Stock markets move not just on numbers, but on emotion. Every tweet, Reddit thread, and headline reflects investor mood, bullish or bearish, and this sentiment often drives short-term volatility. This model leverages the power of Machine Learning driven sentiment analysis to quantify this emotion. It continuously scrapes social media data (Twitter, Reddit and News API), performs hourly sentiment analysis, and converts the sentiment score into an actionable investment recommendation. Our goal is to help traders and analysts see beyond prices and understand why the market feels the way it does, and how that feeling is likely to affect tomorrow's prices.
 
 ## Images 📸
 <img src="projpic1.jpg" alt="projpic1" width="1000">
@@ -58,7 +58,7 @@ We observe positive correlation between public sentiment (derived from Reddit an
 - Negative sentiment dips align with downward price trends (sell signals)
 
 ## Challenges
-During development, we faced several challenges. The first major hurdle was accessing high-quality, real-time data from platforms like Twitter and Reddit, as many APIs have rate limits or require elevated access. We were not able to integrate with AWS because we faced AccessError. Another challenge was handling noise in sentiment analysis — social media language is often sarcastic, informal, or context-dependent, making it difficult for models to interpret correctly.
+During development, we faced several challenges. The first major hurdle was accessing high-quality, real-time data from platforms like Twitter and Reddit, as many APIs have rate limits or require elevated access. We were not able to integrate with AWS because we faced AccessError. Another challenge was handling noise in sentiment analysis. Social media language is often sarcastic, informal, or context-dependent, making it difficult for models to interpret correctly.
 
 ## Future Improvements
 - Use LSTM / Transformer models to forecast sentiment-driven price movement
